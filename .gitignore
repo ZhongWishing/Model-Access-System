@@ -1,0 +1,18 @@
+# .gitignore
+
+# ------ 通用开发环境文件 ------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.idea/
+.vscode/
+venv/
+env/
+*.swp
+*.swo
+
+# ------ 敏感文件 ------
+config/settings.py   # 你的API密钥配置文件
+*.env
+*.key
+credentials.json
