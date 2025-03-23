@@ -4,6 +4,8 @@ import base64
 import logging
 import imghdr
 import json
+import cv2
+import tempfile
 from pathlib import Path
 from typing import List, Union, Dict, Any
 from img_recongition_module.config import settings
@@ -369,6 +371,87 @@ class QwenOCR:
             logger.error(f"处理多张图片失败，错误: {str(e)}")
             raise
             
+    def convert_video_to_frames(self, video_path: str, frame_interval: int = 1, max_frames: int = 30) -> List[str]:
+        """
+        将视频文件转换为帧图像列表
+        
+        Args:
+            video_path: 视频文件路径
+            frame_interval: 帧间隔，每隔多少帧提取一次，默认为1
+            max_frames: 最大提取帧数，默认为30
+            
+        Returns:
+            List[str]: 帧图像文件路径列表
+            
+        Raises:
+            FileNotFoundError: 如果视频文件不存在
+            Exception: 如果视频处理失败
+        """
+        try:
+            if not os.path.exists(video_path):
+                raise FileNotFoundError(f"视频文件不存在: {video_path}")
+                
+            logger.info(f"开始转换视频为帧: {video_path}")
+            
+            # 创建临时目录存储帧
+            temp_dir = tempfile.mkdtemp()
+            logger.info(f"创建临时目录用于存储视频帧: {temp_dir}")
+            
+            # 打开视频文件
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise Exception(f"无法打开视频文件: {video_path}")
+            
+            # 获取视频属性
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            duration = total_frames / fps if fps > 0 else 0
+            
+            logger.info(f"视频信息: 总帧数={total_frames}, FPS={fps}, 时长={duration:.2f}秒")
+            
+            # 计算采样帧数
+            if total_frames <= max_frames:
+                # 如果总帧数小于最大帧数，则使用所有帧
+                actual_frame_interval = 1
+                actual_max_frames = total_frames
+            else:
+                # 否则根据最大帧数计算帧间隔
+                actual_frame_interval = max(1, int(total_frames / max_frames))
+                actual_max_frames = max_frames
+                
+            logger.info(f"采样设置: 帧间隔={actual_frame_interval}, 最大帧数={actual_max_frames}")
+            
+            # 提取帧
+            frame_paths = []
+            frame_count = 0
+            frame_index = 0
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                    
+                if frame_index % actual_frame_interval == 0:
+                    frame_path = os.path.join(temp_dir, f"frame_{frame_count:04d}.jpg")
+                    cv2.imwrite(frame_path, frame)
+                    frame_paths.append(frame_path)
+                    frame_count += 1
+                    
+                    if frame_count >= actual_max_frames:
+                        break
+                        
+                frame_index += 1
+            
+            # 释放资源
+            cap.release()
+            
+            logger.info(f"视频转换完成，共提取了 {len(frame_paths)} 帧")
+            return frame_paths
+            
+        except Exception as e:
+            logger.error(f"视频转换失败: {str(e)}")
+            raise
+    
     def process_video_frames(self, frames: List[str], prompt_type='video', custom_prompt=None):
         """
         处理视频帧序列，支持网络图片和本地图片作为帧
@@ -414,13 +497,35 @@ class QwenOCR:
                     image_url = f"data:image/{image_format};base64,{base64_image}"
                     processed_frames.append(image_url)
             
+            # 添加用户操作行为理解的提示
+            enhanced_prompt = prompt
+            if "user_actions" not in prompt:
+                enhanced_prompt = prompt + """
+
+请额外添加一个字段'user_actions'，详细描述用户在视频中的操作行为，包括但不限于：
+1. 用户的点击行为（点击哪些按钮、区域）
+2. 用户的滑动行为（上下滑动、左右滑动）
+3. 用户的输入行为（在对话框中输入文字）
+4. 界面变化（从一个页面跳转到另一个页面）
+5. 用户与AI助手交互的过程（发送消息、等待回复等）
+6. 忽略用户在输入框中输入汉字的构成，忽略位于大模型回复主体下方的引导问题，不要将它们包含在用户的问答问题当中
+
+
+示例输出格式：
+{
+  "user_messages": [...],
+  "assistant_messages": [...],
+  "user_actions": "用户首先打开了聊天应用，点击对话框并输入'你好'，然后点击发送按钮。当AI助手回复后，用户向上滑动查看历史消息，然后再次点击输入框输入新的问题..."
+}
+"""
+            
             # 调用API
             completion = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {
                         "role": "system",
-                        "content": [{"type": "text", "text": "You are a helpful assistant specialized in extracting text from mobile chat screenshots and videos. Pay close attention to the structure of mobile chat interfaces: user messages typically appear on the right side (often in lighter bubbles), while AI assistant responses appear on the left side (often in darker bubbles). IMPORTANT: The AI assistant often suggests follow-up questions at the bottom of its responses - these should NOT be included as part of the assistant's message. Only extract the actual conversation content, ignoring any suggested follow-up questions."}]
+                        "content": [{"type": "text", "text": "You are a helpful assistant specialized in extracting text from mobile chat screenshots and videos. Pay close attention to the structure of mobile chat interfaces: user messages typically appear on the right side (often in lighter bubbles), while AI assistant responses appear on the left side (often in darker bubbles). IMPORTANT: The AI assistant often suggests follow-up questions at the bottom of its responses - these should NOT be included as part of the assistant's message. Only extract the actual conversation content, ignoring any suggested follow-up questions. Also pay attention to user actions in the video, such as clicking, scrolling, typing, etc."}]
                     },
                     {
                         "role": "user",
@@ -429,7 +534,7 @@ class QwenOCR:
                                 "type": "video",
                                 "video": processed_frames
                             },
-                            {"type": "text", "text": prompt}
+                            {"type": "text", "text": enhanced_prompt}
                         ]
                     }
                 ],
@@ -439,6 +544,49 @@ class QwenOCR:
             return completion.choices[0].message.content
         except Exception as e:
             logger.error(f"处理视频帧序列失败，错误: {str(e)}")
+            raise
+    
+    def process_video_file(self, video_path: str, frame_interval: int = 1, max_frames: int = 30, prompt_type='video', custom_prompt=None):
+        """
+        处理视频文件，先将视频转换为帧，然后进行理解
+        
+        Args:
+            video_path: 视频文件路径
+            frame_interval: 帧间隔，每隔多少帧提取一次，默认为1
+            max_frames: 最大提取帧数，默认为30
+            prompt_type: 提示词类型，可选值: 'single', 'multiple', 'video', 'custom'
+            custom_prompt: 自定义提示词，当prompt_type为'custom'时使用
+            
+        Returns:
+            str: 模型返回的结果
+            
+        Raises:
+            FileNotFoundError: 如果视频文件不存在
+            Exception: 如果API调用失败
+        """
+        try:
+            # 先将视频转换为帧
+            frames = self.convert_video_to_frames(video_path, frame_interval, max_frames)
+            
+            # 处理视频帧
+            result = self.process_video_frames(frames, prompt_type, custom_prompt)
+            
+            # 清理临时文件
+            try:
+                for frame in frames:
+                    if os.path.exists(frame):
+                        os.remove(frame)
+                # 尝试删除临时目录
+                if len(frames) > 0:
+                    temp_dir = os.path.dirname(frames[0])
+                    if os.path.exists(temp_dir):
+                        os.rmdir(temp_dir)
+            except Exception as e:
+                logger.warning(f"清理临时文件失败: {str(e)}")
+                
+            return result
+        except Exception as e:
+            logger.error(f"处理视频文件失败: {str(e)}")
             raise
             
     def parse_ocr_result(self, ocr_result: str) -> Dict[str, Any]:
