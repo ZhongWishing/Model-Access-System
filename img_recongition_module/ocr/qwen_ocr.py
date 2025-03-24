@@ -9,6 +9,9 @@ import tempfile
 from pathlib import Path
 from typing import List, Union, Dict, Any
 from img_recongition_module.config import settings
+import time
+import psutil
+import gc
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -63,7 +66,7 @@ class QwenOCR:
 - 右侧的信息为用户发送的消息（通常是深色气泡）
 - 左侧的回复为AI大模型的回答（通常是浅色气泡）
 - AI大模型回答后通常会在底部自动生成几个引导用户继续对话的小问题
-- 请忽略这些位于大模型回复主体下方的引导问题，不要将它们包含在assistant_messages中
+- 请忽略这些位于大模型回复主体下方的引导问题，不要将它们包含在assistant_messages和user_messages中
 - 只提取真正的对话内容
 
 按照以下格式输出:
@@ -89,7 +92,7 @@ class QwenOCR:
 - 右侧的信息为用户发送的消息（通常是深色气泡）
 - 左侧的回复为AI大模型的回答（通常是浅色气泡）
 - AI大模型回答后通常会在底部自动生成几个引导用户继续对话的小问题
-- 请忽略这些位于大模型回复主体下方的引导问题，不要将它们包含在assistant_messages中
+- 请忽略这些位于大模型回复主体下方的引导问题，不要将它们包含在assistant_messages和user_messages中
 - 只提取真正的对话内容
 
 请注意:
@@ -117,7 +120,7 @@ class QwenOCR:
 - 右侧的信息为用户发送的消息（通常是深色气泡）
 - 左侧的回复为AI大模型的回答（通常是浅色气泡）
 - AI大模型回答后通常会在底部自动生成几个引导用户继续对话的小问题
-- 请忽略这些位于大模型回复主体下方的引导问题，不要将它们包含在assistant_messages中
+- 请忽略这些位于大模型回复主体下方的引导问题，不要将它们包含在assistant_messages和user_messages中
 - 只提取真正的对话内容
 
 请注意:
@@ -435,6 +438,7 @@ class QwenOCR:
                     frame_path = os.path.join(temp_dir, f"frame_{frame_count:04d}.jpg")
                     cv2.imwrite(frame_path, frame)
                     frame_paths.append(frame_path)
+                    
                     frame_count += 1
                     
                     if frame_count >= actual_max_frames:
@@ -451,7 +455,7 @@ class QwenOCR:
         except Exception as e:
             logger.error(f"视频转换失败: {str(e)}")
             raise
-    
+            
     def process_video_frames(self, frames: List[str], prompt_type='video', custom_prompt=None):
         """
         处理视频帧序列，支持网络图片和本地图片作为帧
@@ -585,10 +589,11 @@ class QwenOCR:
                 logger.warning(f"清理临时文件失败: {str(e)}")
                 
             return result
+            
         except Exception as e:
             logger.error(f"处理视频文件失败: {str(e)}")
             raise
-            
+    
     def parse_ocr_result(self, ocr_result: str) -> Dict[str, Any]:
         """
         解析OCR结果为Python字典
